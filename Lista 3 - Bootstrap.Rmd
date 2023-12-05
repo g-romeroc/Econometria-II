@@ -1,0 +1,462 @@
+---
+title: "Lista 3 Aplicada - Econometria II"
+author: "Gustavo Romero Cardoso"
+date: "28/07/2021"
+output: html_document
+---
+**Universidade de São Paulo - Departamento de Economia**
+
+**EAE 6030 - Econometria II**
+
+**Prof. Dr. Pedro Forquesato**
+
+**Monitora: Isadora Árabe**
+
+### Importando as bibliotecas:
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+library(mfx)
+library(tidyverse)
+library(haven)
+library(sandwich)
+library(lmtest)
+library(fastDummies)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(matlib)
+```
+
+### Preparação dos Dados (Lista 1):
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+# ALWAYS SET SEED
+set.seed(20211)
+
+X <- data.frame(
+  # Normal with 4 different groups of means and std.
+  income = rnorm(n = 1000, mean = c(20, 30, 40, 50), sd = c(6, 6, 9, 9)), 
+  vote_share = runif(n = 1000, min = 0, max = 1), # U[0, 1]
+  age = rpois(n = 1000, lambda = 50), # Poisson
+  race = rep(letters[1:4], times = 250) # Factor variable with groups having different incomes
+)
+
+# True parameters
+true_beta = c(0.05, 0.4, 0.08, -0.06, -0.08, 0.15)
+true_delta = 0.0
+
+# We need to turn the groups into dummies. 
+X_dummy <- fastDummies::dummy_cols(X)
+
+# Now we create the dependent variable given the structural model
+
+# Heteroskedastic Normal errors
+U <- rnorm(n = 1000, mean = 0, sd = 0.1) 
+
+# This is X * beta
+X_beta <- X_dummy$income * true_beta[1] + X_dummy$vote_share * true_beta[2] + 
+  X_dummy$age * true_beta[3] + X_dummy$race_b * true_beta[4] + 
+  X_dummy$race_c * true_beta[5] + X_dummy$race_d * true_beta[6]
+
+# The true equation has delta 0.
+wage = exp(X_beta + true_delta * X_beta^2 + U)
+df <- cbind(X_dummy, wage)
+knitr::kable(head(df)) %>% kableExtra::kable_styling()
+
+```
+
+### Preparação dos Dados(Lista 2):
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+# We need to add the dependent variable to the data
+
+# True parameters
+true_beta = c(-20.0, 0.4, 7.0, -0.07, 10.0, 13.0, 20.0)
+
+# Now we build the binary outcome variable
+# Note that the true DGP is logistic
+U <- rlogis(n = 1000, location = 0, scale = 10)
+df$employed = ifelse(
+  true_beta[1] + df$income * true_beta[2] + df$vote_share * true_beta[3] + 
+  df$age * true_beta[4] + df$race_b * true_beta[5] + df$race_c * true_beta[6] + 
+  df$race_d * true_beta[7] + U > 0, 
+      1, 0)
+```
+
+##### Renomeando as variáveis
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+y <- as.matrix(df$employed)
+x1 <- as.matrix(df$income)
+x2 <- as.matrix(df$vote_share)
+x3 <- as.matrix(df$age)
+x4 <- as.matrix(df$race_b)
+x5 <- as.matrix(df$race_c)
+x6 <- as.matrix(df$race_d)
+
+```
+
+
+
+### **1.1 Bootstrap Não paramétrico**
+Em primeiro lugar, vamos realizar B reamostragens com reposição da amostra original com tamanho N. Assim, o Bootstrap procura a distribuição de theta por simulação de monter carlo na distribuição empírica dos dados (como se fosse a verdadeira distribuição).  
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+B <- 1999
+n <- nrow(x1)
+
+## Reamostras
+yb <- matrix(sample(y, size = B*n, replace = TRUE), ncol = B, nrow = n)
+x1b <- matrix(sample(x1, size = B*n, replace = TRUE), ncol = B, nrow = n)
+x2b <- matrix(sample(x2, size = B*n, replace = TRUE), ncol = B, nrow = n)
+x3b <- matrix(sample(x3, size = B*n, replace = TRUE), ncol = B, nrow = n)
+x4b <- matrix(sample(x4, size = B*n, replace = TRUE), ncol = B, nrow = n)
+x5b <- matrix(sample(x5, size = B*n, replace = TRUE), ncol = B, nrow = n)
+x6b <- matrix(sample(x6, size = B*n, replace = TRUE), ncol = B, nrow = n)
+
+```
+
+A seguir encontramos as estimativas dos estimadores para cada um das B reamostragens via Probit. Ou seja, vamos encontrar:
+$$ \left \{ \hat{\theta_{b}^{*}} \right \}_{b=1}^{B} $$
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+theta_b <- matrix(0,7,B)
+
+## Encontrando as estimativas dos estimadores para cada uma das B "reamostragens"
+for( b in 1:B){
+  probitb <-  glm(yb[,b] ~ x1b[,b] + x2b[,b] + x3b[,b] + x4b[,b] + x5b[,b] + x6b[,b], family = binomial(link = "probit"))
+  for (i in 1:7){
+  theta_b[i,b] <- probitb$coef[i]
+  }
+}
+
+## Média das estimativas:
+  m_theta <- as.matrix(rowMeans(theta_b))
+    dimnames(m_theta) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                                c("Estimativa"))
+
+## Encontrando o "Viés":
+  v <- theta_b - as.numeric(m_theta)
+
+## Variância Bootstrap(não paramétrico):
+  var_np <- (1/B) * rowSums(v^2)
+
+## Desvio Padrão Bootstrap(Não paramétrico):
+  dp_np <- sqrt(as.matrix(var_np))
+    dimnames(dp_np) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                                c("Desvio Padrão"))
+  dp_np
+```
+
+
+### **1.2 Bootstrap Paramétrico**
+Aqui, assumimos que os dados vêm de uma distribuição conhecida com parâmetros desconhecidos. Em nosso caso, a distribuição é uma normal por se tratar de um probit. Sendo assim, estimamos os parâmetros dos dados que possuímos e, assim usamos a distribuições estimadas para encontrar as amostras. 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+## Estimando "theta" em nossa amostra original. theta é uma matriz 7x1
+  probit_original <- glm(y ~ x1 + x2 + x3 + x4 + x5 + x6, family = binomial(link = "probit"))
+  theta <- as.matrix(probit_original$coef)
+
+## Criando matrix de zeros - com dimensão n=1000 x 2000=B
+  y_b <- matrix(0,n,B)
+
+## No Bootstrap paramétrico conhecemos a distribuição de y, então vamos utilizar as reamonstragens feitas anteriormente para x1,x2,...,x6 para encontrar y do Bootstrap paramétrico.
+  
+  for( b in 1:B){
+    y_b[,b] <- as.matrix(pnorm(1*theta[1] + x1b[,b] * theta[2] + x2b[,b] * theta[3] + x3b[,b] * theta[4] + x4b[,b] * theta[5] + x5b[,b] * theta[6] + x6b[,b] * theta[7]))
+  }
+  
+  
+## Probit paramétrico:
+
+  # Criando uma matrix de zeros para estimarmos o nosso theta para cada uma das B reamonstragens (análogo ao exercício anterior)
+  
+  theta_par <- matrix(0,7,B)
+  
+  for( b in 1:B){
+    probit_p <-  glm(y_b[,b] ~ x1b[,b] + x2b[,b] + x3b[,b] + x4b[,b] + x5b[,b] + x6b[,b], family = binomial(link = "probit"))
+    
+    for (i in 1:7){
+      theta_par[i,b] <- probit_p$coef[i]
+    }
+  }
+  
+## Média das estimativas:
+  m_theta_par <- as.matrix(rowMeans(theta_par))
+    dimnames(m_theta_par) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                                c("Estimativa"))
+
+## Encontrando a diferença entre os termos e a média:
+  v_par <- theta_par - as.numeric(m_theta_par)
+
+## Variância Bootstrap(paramétrico):
+  var_p <- (1/B) * rowSums(v_par^2)
+
+## Desvio Padrão Bootstrap(Não paramétrico):
+  dp_p <- sqrt(as.matrix(var_p))
+    dimnames(dp_p) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                                c("Desvio Padrão"))
+  dp_p
+  
+```
+
+### **2.1 Intervalo de Confiança e Bootstrap p-values - Boostrap Não Paramétrico**
+
+##### Encontrando o t-test para cada um das B reamostras:
+$$ t^*_{b} = (\frac{\hat{\theta^{*}_{b}} - \hat{\theta}}{s_{\theta^{*}_{b}}} )  $$, 
+onde
+$$ \theta=\left \{ \beta_0, \beta_1, \beta_2, \beta_3, \beta_4, \beta_5, \beta_6\left.  \right \} \right.  $$
+e teremos t* para b=1,2,..,B (=1999). 
+Sob $$ H_0: \hat{\theta} = c = 0 $$, vamos calcular as estatísticas t para cada reamostra. 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+## t-test - NÃO-PARAMÉTRICO:
+
+  # Variância de para cada theta da reamostragem
+  var_tnp <- (1/B) * (v^2)
+
+  # Calculando o t-test para cada um dos bootstraps
+  t_np <- matrix(0,7,B)
+    for(i in 1:B){
+      t_np[,i] <- (theta_b[,i]- 0)/sqrt(var_tnp[,i])
+    }
+
+```
+
+##### Ordenando t_b das reamostras e encontrando t da amostra original
+Devemo ordenar os t_b para encontrarmos o valor crítico. Como B=1999 e o nível de significância é de 5%, então o valor crítico é dado por t_100 e t_1900, pois (B+1)*5% = 100.
+
+Além disso, já calculamos as estimativas dos betas da amostra original pelo probit (variável "theta"). Agora, para encontrarmos a estatística t original é necessário o desvio padrão da amostra original.
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+## Vamos ordenar nossos B=1999 t-test (em relação a b0,b1,...,b6), assim temos o t ordenado de b0,...:
+  tord_bo <- as.matrix(sort(t_np[1,]))
+  tord_b1 <- as.matrix(sort(t_np[2,]))
+  tord_b2 <- as.matrix(sort(t_np[3,]))
+  tord_b3 <- as.matrix(sort(t_np[4,]))
+  tord_b4 <- as.matrix(sort(t_np[5,]))
+  tord_b5 <- as.matrix(sort(t_np[6,]))
+  tord_b6 <- as.matrix(sort(t_np[7,]))
+
+  tord <- cbind(tord_bo,tord_b1,tord_b2,tord_b3,tord_b4,tord_b5,tord_b6)
+  
+## Como temos B=1999 e alpha=5%, então o valor crítico é dado por t_100 e t_1900, já que [B+1]*alpha = 100
+  t_100 <- as.matrix(cbind(tord_bo[100], tord_b1[100],tord_b2[100],tord_b3[100],tord_b4[100],tord_b5[100],tord_b6[100]))
+  
+  t_1900 <- as.matrix(cbind(tord_bo[1900], tord_b1[1900],tord_b2[1900],tord_b3[1900],tord_b4[1900],tord_b5[1900],tord_b6[1900]))
+  
+  
+  # Desvio-Padrão da amostra original (já calculamos o probit pelo "probit_original"):
+    dp_original <- as.matrix(summary(probit_original)$coef[,2])
+      colnames(dp_original) <- list(c("Std. Error - Amostra Original"))
+  
+    # Encontrando t da amostra original, sob H0: theta_hat = c = 0:
+      t_original <- theta/(dp_original)
+    
+    # Comparando t com t_100 e t_1900:
+    compar_t <- cbind(t(t_100),t(t_1900), t_original)
+      dimnames(compar_t) <- list(c("b0","b1","b2","b3","b4","b5","b6"), c("t_100", "t_1900", "t_original"))
+    
+    compar_t
+```
+Note que **Não Rejeitamos H0** ao nível de 5% de significância, uma vez que todos t_original pertencem [t_100,t_1900).
+
+
+#### Calculando Intervalo de Confiança 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+  
+  # Como visto em aula - Intervalo de confiança a nível de 95%:
+      # a variável "theta" são os valores estimados na amostra original
+      # Vamos utilizar o desvio padrão do bootstrap não paramétrico
+  
+  Idc_npleft <- theta + t(t_100) * dp_np
+  
+  Idc_npRight <- theta + t(t_1900) * dp_np
+  
+  Idc_np <- cbind(Idc_npleft,Idc_npRight)
+      dimnames(Idc_np) <- list(c("bo","b1","b2","b3","b4", "b5", "b6"),
+                               c("IC Inferior", "IC Superior"))
+  Idc_np
+
+```
+
+##### Calculando o P-valor
+
+Em seguida, vamos montar a estatística de teste original e ver em qual posição ela está na ordenação dos t_b's encontrados para cada reamostra. Assim, conseguimos encontrar o P-valor de cada beta. 
+
+**Observação:** Seja Ho: theta_hat = c = 0. Note que já calculamos t_original e  vai ser uma matriz com dimensão 7x1, onde temos a estatística para cada estimador de theta
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+ 
+  # Agora, precisamos checar em qual posição os t_original estão na ordenação dos t para que possamos encontrar os p-value:
+
+  non_parametric_position <- function(i){
+    pos <- 0
+    for (b in 1:B){
+      if(t_original[i]>tord[b,i]){
+        pos <- pos + 1
+      }
+    }
+    return(pos)
+  }
+
+
+## Uma vez que temos as posições em que t_original está nos t_b's, podemos calcular:  
+  # Non-Parametric P Values:
+    np_p_value <- matrix(0,7,1)
+    
+    for (i in 1:7){
+      np_p_value[i] <- 1 - (non_parametric_position(i)/(B+1))
+        dimnames(np_p_value) <- list(c("bo","b1","b2","b3","b4", "b5", "b6"),
+                                     c("P-valor Não Paramétrico"))
+    }
+    np_p_value
+```
+
+### **2.2 Intervalo de Confiança e Bootstrap p-values - Boostrap Paramétrico**
+Toda argumentação vai ser análoga ao que fizemos em **2.1**.
+
+##### Encontrando o t-test para cada um das B reamostras:
+Sob $$ H_0: \hat{\theta} = c = 0 $$, vamos calcular as estatísticas t para cada reamostra. 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+## t-test - PARAMÉTRICO:
+
+  # Variância de para cada theta da reamostragem - paramétrico
+  var_tp <- (1/B) * (v_par^2)
+
+  # Calculando o t-test para cada um dos bootstraps
+  t_parametric <- matrix(0,7,B)
+    for(i in 1:B){
+      t_parametric[,i] <- (theta_par[,i]- 0)/sqrt(var_tp[,i])
+    }
+
+```
+
+##### Ordenando t_b das reamostras e encontrando t da amostra original:
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+## Vamos ordenar nossos B=1999 t-test do bootstrap PARAMÉTRICO(em relação a b0,b1,...,b6), assim temos o t ordenado de b0,...:
+  tord_parbo <- as.matrix(sort(t_parametric[1,]))
+  tord_parb1 <- as.matrix(sort(t_parametric[2,]))
+  tord_parb2 <- as.matrix(sort(t_parametric[3,]))
+  tord_parb3 <- as.matrix(sort(t_parametric[4,]))
+  tord_parb4 <- as.matrix(sort(t_parametric[5,]))
+  tord_parb5 <- as.matrix(sort(t_parametric[6,]))
+  tord_parb6 <- as.matrix(sort(t_parametric[7,]))
+
+  tord_par <- cbind(tord_parbo,tord_parb1,tord_parb2,tord_parb3,tord_parb4,tord_parb5,tord_parb6)
+  
+## Como temos B=1999 e alpha=5%, então o valor crítico é dado por t_100 e t_1900, já que [B+1]*alpha = 100
+  t_par_100 <- as.matrix(cbind(tord_parbo[100], tord_parb1[100],tord_parb2[100],tord_parb3[100],tord_parb4[100],tord_parb5[100],tord_parb6[100]))
+  
+  t_par_1900 <- as.matrix(cbind(tord_parbo[1900], tord_parb1[1900],tord_parb2[1900],tord_parb3[1900],tord_parb4[1900],tord_parb5[1900],tord_parb6[1900]))
+  
+    # Comparando t paramétrico com t_100 e t_1900:
+    compar_t_par <- cbind(t(t_par_100),t(t_par_1900), t_original)
+      dimnames(compar_t_par) <- list(c("b0","b1","b2","b3","b4","b5","b6"), c("t_par_100", "t_par_1900", "t_original"))
+    
+    compar_t_par
+```
+
+#### Calculando Intervalo de Confiança 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+  
+  # Como visto em aula - Intervalo de confiança a nível de 95%:
+      # a variável "theta" são os valores estimados na amostra original
+      # Vamos utilizar o desvio padrão do bootstrap paramétrico
+  
+  Idc_parleft <- theta + t(t_par_100) * dp_p
+  
+  Idc_parRight <- theta + t(t_par_1900) * dp_p
+  
+  Idc_par <- cbind(Idc_parleft,Idc_parRight)
+      dimnames(Idc_par) <- list(c("bo","b1","b2","b3","b4", "b5", "b6"),
+                               c("IC Inferior (Paramétrico)", "IC Superior (Paramétrico)"))
+  Idc_par
+
+```
+
+##### Calculando o P-valor (Bootstrap Paramétrico)
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+ 
+  # Agora, precisamos checar em qual posição os t_original estão na ordenação dos t para que possamos encontrar os p-value (Paramétrico):
+
+  parametric_position <- function(i){
+    pos <- 0
+    for (b in 1:B){
+      if(t_original[i]>tord_par[b,i]){
+        pos <- pos + 1
+      }
+    }
+    return(pos)
+  }
+  
+ 
+
+## Uma vez que temos as posições em que t_original está nos t_b's, podemos calcular:  
+  # Non-Parametric P Values:
+    parametric_p_value <- matrix(0,7,1)
+    
+    for (i in 1:7){
+      parametric_p_value[i] <- 1 - (parametric_position(i)/(B+1))
+        dimnames(parametric_p_value) <- list(c("bo","b1","b2","b3","b4", "b5", "b6"),
+                                     c("P-valor Paramétrico"))
+    }
+    parametric_p_value
+```
+
+### **3. Comparando com os resultados obtidos na lista 2 Aplicada**
+
+
+##### Copiando o código utilizado para encontrar as estimativas do theta na lista 2
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+fp <- function(f) {
+  b0=f[1]
+  b1=f[2]
+  b2=f[3]
+  b3=f[4]
+  b4=f[5]
+  b5=f[6]
+  b6=f[7]
+    #beta <- rbind(b0,b1,b2,b3,b4,b5,b6)
+    #z <- x %*% beta
+  z <- b0 + b1 * x1+ b2 * x2 + b3*x3 + b4*x4 + b5*x5 + b6*x6 
+    sum( y * log(pnorm(z)) + (1-y) * log(1-pnorm(z)))
+}
+bh <- optim( c(0.01,0.01,0.01,0.03,0.03,0.03,0.03),fp)$par
+
+# bh são os betas estimados:
+b_est <- rbind(bh[1],bh[2],bh[3],bh[4],bh[5],bh[6],bh[7])
+      dimnames(b_est) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                              c("Estimativa"))
+b_est
+```
+##### Código utilizado para encontrar o desvio padrão na lista 2
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+x <- cbind(1,x1,x2,x3,x4,x5,x6)
+
+# Matriz X*Beta estimado:
+xb_e <- x %*% b_est
+
+# Definindo ui:
+ui <- y - pnorm(xb_e)
+
+# Score:
+score <- (t(x) %*% ui %*% t(dnorm(xb_e)))/(as.numeric(t(pnorm(xb_e)) %*% (1- pnorm(xb_e))))
+
+# Como vale igualdade informacional de Fisher, vamos calcular a matriz de variância-covariância pela matriz B0:
+B0 <- score %*% t(score)
+
+
+Avar <- ginv(as.matrix(B0))/1000
+
+
+Sd_lista2 <- cbind(diag(round(sqrt(Avar),10)))
+```
+
+
+#### **Comparação**
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+res <- cbind(b_est, Sd_lista2, m_theta, dp_np, m_theta_par, dp_p)
+dimnames(res) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                      c("Estimativa lista 2 ", "Desvio Padrão Lista 2", 
+                      "Média das estimatimativas - Não Paramétrico", "Desvio Padrão Não Paramétrico",
+                      "Média das estimativas - Paramétrico", "Desvio Padrão Paramétrico"))
+res
+```
+

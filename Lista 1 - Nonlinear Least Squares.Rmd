@@ -1,0 +1,262 @@
+---
+title: "Lista 1 - NLS Econ"
+author: "Gustavo Romero Cardoso"
+date: "16/06/2021"
+output: html_document
+---
+**Universidade de São Paulo - Departamento de Economia**
+
+**EAE 6030 - Econometria II**
+
+**Prof. Dr. Pedro Forquesato**
+
+**Monitora: Isadora Árabe**
+
+
+### Importando as bibliotecas:
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+library(mfx)
+library(tidyverse)
+library(haven)
+library(sandwich)
+library(lmtest)
+library(fastDummies)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(matlib)
+```
+
+### Preparação dos Dados:
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+# ALWAYS SET SEED
+set.seed(20211)
+
+X <- data.frame(
+  # Normal with 4 different groups of means and std.
+  income = rnorm(n = 1000, mean = c(20, 30, 40, 50), sd = c(6, 6, 9, 9)), 
+  vote_share = runif(n = 1000, min = 0, max = 1), # U[0, 1]
+  age = rpois(n = 1000, lambda = 50), # Poisson
+  race = rep(letters[1:4], times = 250) # Factor variable with groups having different incomes
+)
+
+# True parameters
+true_beta = c(0.05, 0.4, 0.08, -0.06, -0.08, 0.15)
+true_delta = 0.0
+
+# We need to turn the groups into dummies. 
+X_dummy <- fastDummies::dummy_cols(X)
+
+# Now we create the dependent variable given the structural model
+
+# Heteroskedastic Normal errors
+U <- rnorm(n = 1000, mean = 0, sd = 0.1) 
+
+# This is X * beta
+X_beta <- X_dummy$income * true_beta[1] + X_dummy$vote_share * true_beta[2] + 
+  X_dummy$age * true_beta[3] + X_dummy$race_b * true_beta[4] + 
+  X_dummy$race_c * true_beta[5] + X_dummy$race_d * true_beta[6]
+
+# The true equation has delta 0.
+wage = exp(X_beta + true_delta * X_beta^2 + U)
+df <- cbind(X_dummy, wage)
+knitr::kable(head(df)) %>% kableExtra::kable_styling()
+
+```
+
+##### Renomeando as variáveis
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+y <- df$wage
+x1 <- df$income
+x2 <- df$vote_share
+x3 <- df$age
+x4 <- df$race_b
+x5 <- df$race_c
+x6 <- df$race_d
+```
+
+### **1.1 Calcule a Estimativa de NLS**
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+f <-function(f) {
+  b1=f[1]
+  b2=f[2]
+  b3=f[3]
+  b4=f[4]
+  b5=f[5]
+  b6=f[6]
+    sum((y - exp(b1*x1 + b2*x2 + b3*x3 + b4*x4 + b5*x5 + b6*x6))^2)
+}
+
+bh <-nlm(f, c(0.01,0.01,0.03,0.03,0.03,0.03))$estimate
+
+
+# bh são os betas estimados:
+b_est <- rbind(bh[1],bh[2],bh[3],bh[4],bh[5],bh[6])
+      dimnames(b_est) <- list(c("b1","b2","b3","b4","b5","b6"),
+                              c("Estimativa"))
+b_est
+
+```
+
+### **1.2 Calcule a estimativa da matriz assintótica de variância-covariância dos estimadores NLS**
+Vamos definir uma matrix "x" que contêm os vetores x1, x2, x3, x4, x5 e x6 ( que foram definidos anteriormente).
+Em seguida, buscando facilitar a notação, vamos nomear k=exp(x1 * b1 + x2 * b2 + x3 * b3 + x4 * b4 + x5 * b5 + x6 * b6). Note que vamos utlizar b1,..,b6 que foram estimados em **1.1**. utilizados são aqueles estimados em 1.1. 
+
+
+**Obs: dim(x) = 1000 x 6; dim(b_est) = 6 x 1; dim(k) = 1000 x 1**
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# MATRIX x :
+x <- cbind(x1,x2,x3,x4,x5,x6)
+
+# Definindo K:
+k <- exp(x %*% b_est)
+
+```
+
+
+O **gradiente** de $$m(x, \beta)= e^{x \beta}$$ é $$\bigtriangledown_\beta \ m(x, \beta) = x' e^{x \beta} $$.
+
+**Seja:** 
+$$ A_0 = E[ \bigtriangledown_\beta \ m(x, \beta_0) \bigtriangledown_\beta \ m(x, \beta_0)^T]$$
+$$ B_0 = E[S(y,x,\beta_0) S(y,x,\beta_o )^T],$$ onde $$ S(y,x,\beta_o) =  (y-m(x,\beta_0)) \  \bigtriangledown_\beta m(x, \beta_0)^T $$
+Por fim, vamos calcular a estimativa da matriz de variância assintótica: **$$Avar(\hat{\beta} ) = \frac{(A_0)^{-1} * B_0 * (A_0)^{-1}}{N} $$**
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Gradiente 
+grad <- t(x) %*% k
+
+
+#Hessiana
+H <- nlm(f, c(0.01,0.01,0.03,0.03,0.03,0.03), hessian = "true")$hessian
+
+
+#Função Score:
+score <- (y-k) %*% t(grad)
+
+
+#Bo:
+Bo <- t(score) %*% score
+
+
+#Calculando estimativa da matriz assintótica:
+Avar <- (1/1000) * (solve(H) %*% Bo %*% solve(H))
+
+
+Sd <- cbind(diag(round(sqrt(Avar),2)))
+
+q <- cbind(round(b_est,3), Sd)
+dimnames(q) <- list(c("b1", "b2", "b3", "b4", "b5","b6"),
+                           c("Estimate", "Std. Error")) 
+q
+
+```
+
+
+
+### **1.3 Interprete e compare os resultados **
+
+Podemos observar que os betas estimados ficaram mais próximos dos betas verdadeiros do que os valores estimados via OLS. Além disso, os desvios padrões dos estimadores também foram de menor magnitudade quando comparados ao OLS, uma vez que o modelo de OLS está mal especificado.
+
+Em NLS, os betas estimados quando estão sozinhos não nos fornecem nenhum significado, pois eles dependem de x, diferentemente de OLS que podemos calcular os efeitos parciais apenas com os betas. No entanto, em NLS é possível calcular o efeito relativo pela razão dos betas que é igual ao efeito relativo de OLS, ou seja, o efeito relativo de NLS não vai depender de x, enquanto o efeito parcial sim.
+
+Por fim, as nossas estimativas do NLS ficaram bem próximas dos valores verdadeiros de beta. Esse resultado é esperando, já que queremos estimar uma função conhecida não linear.
+
+
+### **1.4 Estatística de Wald**
+$$ H_0 : \beta_1 = \beta_3$$ 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# c minúsculo(c_pequeno):
+c_p <- cbind(1,0,-1,0,0,0) %*% b_est
+
+# C maiúsculo(c_grande):
+c_g <- cbind(1,0,-1,0,0,0)
+
+wald <- t(c_p) %*% solve( c_g %*% solve(H) %*% Bo %*% solve(H) %*% t(c_g)) %*% c_p
+
+# A estatística do teste de Wald possui distribuição Qui-Quadrado com r=1 grau de liberdade, então nosso valor crítico ao nível de significância de 5%:
+
+z <- qchisq(0.95,1)
+
+
+a <- cbind(wald,z)
+      dimnames(a) <- list(c("Valores"),
+                          c("Wald", "Qui-Quadrado"))
+a
+
+```
+**Como a estatística de teste é menor que o valor crítico, então não rejeitamos a Hipótese Nula ao nível de 5% de significância**
+
+
+
+### **1.5 Teste de Score**
+$$ H_0 : \delta = 0$$ no modelo estrutural extendido:
+$$ Y = e^{X\beta + \delta(X\beta)^2} + U $$
+O modelo com as restrições impostas é apenas uma regressão da função exponencial (igual a feita anteriormente). Podemos calcular a estatística LM resolvendo o modelo apenas sob Ho.
+Sob Ho e NLS.3 $$ Var(y|x)=Var(u|x) = {\sigma_0}^2, $$ calculamos a estatística do teste score da seguinte maneira:
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+y_mean <- mean(y)
+
+y_prev <- x %*% b_est
+
+# Soma dos Quadrados Totais
+sqt <- sum((y - y_mean)^2)
+
+# Soma dos Quadrados Explicadas
+sqe <- sum((y_prev - y_mean)^2)
+
+# R Quadrado:
+r2 <- sqe/sqt
+
+LM <- r2 * 1000
+
+t <- cbind(LM,z)
+      dimnames(t) <- list(c("Valores"),
+                          c("LM", "Qui-Quadrado"))
+t
+```
+**Como a estatística de teste é maior que o valor crítico, então rejeitamos a Hipótese Nula ao nível de 5% de significância**
+
+
+
+
+### **1.6 Estimação Modelo Estrutural Extendido**
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+f2 <-function(f2) {
+  delta = f2[1]
+  b1e=f2[2]
+  b2e=f2[3]
+  b3e=f2[4]
+  b4e=f2[5]
+  b5e=f2[6]
+  b6e=f2[7]
+    sum((y - exp((b1e*x1 + b2e*x2 + b3e*x3 + b4e*x4 + b5e*x5 + b6e*x6) + 
+                   delta * (b1e*x1 + b2e*x2 + b3e*x3 + b4e*x4 + b5e*x5 + b6e*x6)^2))^2)
+}
+
+bhe <-nlm(f2, c(0.0,0.01,0.01,0.03,0.03,0.03,0.03))$estimate
+
+
+# bh são os betas estimados:
+b_est2 <- round(rbind(bhe[1],bhe[2],bhe[3],bhe[4],bhe[5],bhe[6],bhe[7]),3)
+
+
+
+#Criando novos vetores com os valores dos betas estimados em 1.1 e com os valores verdadeiros para fazer uma tabela comparando os valores.
+
+estimados <- round(rbind(0,b_est),3)
+verdadeiros <- rbind(0.0,0.05,0.4,0.08,-0.06,-0.08,0.15)
+
+comp <- cbind(verdadeiros,estimados,b_est2)
+      dimnames(comp) <- list(c("Delta","b1","b2","b3","b4","b5","b6"),
+                          c("Verdadeiros", "Estimado 1.1", "Estimado 1.6"))
+comp
+
+```
+
+

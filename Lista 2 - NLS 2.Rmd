@@ -1,0 +1,452 @@
+---
+title: "Lista 2 - Econometria"
+author: "Gustavo Romero Cardoso"
+date: "05/07/2021"
+output: html_document
+---
+**Universidade de São Paulo - Departamento de Economia**
+
+**EAE 6030 - Econometria II**
+
+**Prof. Dr. Pedro Forquesato**
+
+**Monitora: Isadora Árabe**
+
+### Importando as bibliotecas:
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+library(mfx)
+library(tidyverse)
+library(haven)
+library(sandwich)
+library(lmtest)
+library(fastDummies)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(matlib)
+```
+
+### Preparação dos Dados (Lista 1):
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+# ALWAYS SET SEED
+set.seed(20211)
+
+X <- data.frame(
+  # Normal with 4 different groups of means and std.
+  income = rnorm(n = 1000, mean = c(20, 30, 40, 50), sd = c(6, 6, 9, 9)), 
+  vote_share = runif(n = 1000, min = 0, max = 1), # U[0, 1]
+  age = rpois(n = 1000, lambda = 50), # Poisson
+  race = rep(letters[1:4], times = 250) # Factor variable with groups having different incomes
+)
+
+# True parameters
+true_beta = c(0.05, 0.4, 0.08, -0.06, -0.08, 0.15)
+true_delta = 0.0
+
+# We need to turn the groups into dummies. 
+X_dummy <- fastDummies::dummy_cols(X)
+
+# Now we create the dependent variable given the structural model
+
+# Heteroskedastic Normal errors
+U <- rnorm(n = 1000, mean = 0, sd = 0.1) 
+
+# This is X * beta
+X_beta <- X_dummy$income * true_beta[1] + X_dummy$vote_share * true_beta[2] + 
+  X_dummy$age * true_beta[3] + X_dummy$race_b * true_beta[4] + 
+  X_dummy$race_c * true_beta[5] + X_dummy$race_d * true_beta[6]
+
+# The true equation has delta 0.
+wage = exp(X_beta + true_delta * X_beta^2 + U)
+df <- cbind(X_dummy, wage)
+knitr::kable(head(df)) %>% kableExtra::kable_styling()
+
+```
+
+### Preparação dos Dados(Lista 2):
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+# We need to add the dependent variable to the data
+
+# True parameters
+true_beta = c(-20.0, 0.4, 7.0, -0.07, 10.0, 13.0, 20.0)
+
+# Now we build the binary outcome variable
+# Note that the true DGP is logistic
+U <- rlogis(n = 1000, location = 0, scale = 10)
+df$employed = ifelse(
+  true_beta[1] + df$income * true_beta[2] + df$vote_share * true_beta[3] + 
+  df$age * true_beta[4] + df$race_b * true_beta[5] + df$race_c * true_beta[6] + 
+  df$race_d * true_beta[7] + U > 0, 
+      1, 0)
+```
+
+##### Renomeando as variáveis
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+y <- df$employed
+x1 <- df$income
+x2 <- df$vote_share
+x3 <- df$age
+x4 <- df$race_b
+x5 <- df$race_c
+x6 <- df$race_d
+
+# Matrix x:
+x <- cbind(1,x1,x2,x3,x4,x5,x6)
+
+```
+
+
+
+
+### **1.1 Calcule a Estimativa de NLS**
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+fp <- function(f) {
+  b0=f[1]
+  b1=f[2]
+  b2=f[3]
+  b3=f[4]
+  b4=f[5]
+  b5=f[6]
+  b6=f[7]
+    #beta <- rbind(b0,b1,b2,b3,b4,b5,b6)
+    #z <- x %*% beta
+  z <- b0 + b1 * x1+ b2 * x2 + b3*x3 + b4*x4 + b5*x5 + b6*x6 
+    sum( y * log(pnorm(z)) + (1-y) * log(1-pnorm(z)))
+}
+bh <- optim( c(0.01,0.01,0.01,0.03,0.03,0.03,0.03),fp)$par
+
+# bh são os betas estimados:
+b_est <- rbind(bh[1],bh[2],bh[3],bh[4],bh[5],bh[6],bh[7])
+      dimnames(b_est) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                              c("Estimativa"))
+b_est
+```
+
+##### Matriz Variância-Covariância e Variância Assintótica
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Matriz X*Beta estimado:
+xb_e <- x %*% b_est
+
+# Definindo ui:
+ui <- y - pnorm(xb_e)
+
+# Score:
+score <- (t(x) %*% ui %*% t(dnorm(xb_e)))/(as.numeric(t(pnorm(xb_e)) %*% (1- pnorm(xb_e))))
+
+# Como vale igualdade informacional de Fisher, vamos calcular a matriz de variância-covariância pela matriz B0:
+B0 <- score %*% t(score)
+
+
+Avar <- ginv(as.matrix(B0))/1000
+Avar
+
+Sd <- cbind(diag(round(sqrt(Avar),10)))
+
+
+```
+
+##### Quais coeficientes são estatísticamente diferentes de zero? Vamos utilizar o teste 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# t-test:
+t_b <- rep(0,7)
+for(i in 1:7){
+  t_b[i] <- b_est[i]/Sd[i]
+}
+
+# Calculando o valor crítico para o teste-t com grau de 95% de confiança e n-(k+1)=1000-7= 993
+
+tc <-as.matrix(qt(1-.05/2,993))
+dimnames(tc) <- list(c("Valor Crítico"), c("t-test"))
+
+
+res <- cbind(b_est, Sd, t_b)
+dimnames(res) <- list(c("b0","b1","b2","b3","b4","b5","b6"),
+                              c("Estimativa", "Erro Padrão", "t-test"))
+res
+tc
+```
+Temos 95% de confiança que há evidência de que todas as 7 variáveis são relevantes para *employed*, uma vez que a Hipótese Nula: $$H0 :  \hat{\beta} = 0$$ 
+$$ Ha: \hat{\beta}  \neq 0 $$ 
+é rejeitada a 95% de confiança. 
+
+
+
+
+### **1.2 Efeitos Parciais na Média (APE) e Média dos Efeitos Marginais**
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Efeito Parcial na Média (PEA):
+
+x_barra <- colMeans(x=x, na.rm=TRUE)
+d <- dnorm(x_barra %*% b_est)
+
+PEA_income <- b_est[1] * d
+PEA_vote <- b_est[2] * d
+PEA_age <- b_est[3] * d
+PEA_rb <- b_est[4] * d
+PEA_rc <- b_est[5] * d
+PEA_rd <- b_est[6] * d
+
+PEA <- rbind(PEA_income, PEA_vote, PEA_age, PEA_rb, PEA_rc, PEA_rd)
+      dimnames(PEA) <- list(c("income","vote_share","age","race_b","race_c","race_d"),
+                              c("PEA"))
+
+ 
+# Efeito Parcial Médio (APE):
+q <- sum(dnorm(xb_e))
+
+APE_income <- b_est[1] * q
+APE_vote <- b_est[2] * q
+APE_age <- b_est[3] * q
+APE_rb <- b_est[4] * q
+APE_rc <- b_est[5] * q
+APE_rd <- b_est[6] * q
+
+APE <- rbind(APE_income, APE_vote, APE_age, APE_rb, APE_rc, APE_rd)
+      dimnames(APE) <- list(c("income","vote_share","age","race_b","race_c","race_d"),
+                              c("APE"))
+      
+cbind(APE,PEA)
+
+```
+###### Interpretação:
+Estamos interessados no efeito parcial das variáveis, porém no modelo probit (ou na classe dos não lineares) a variável beta por si só não apresenta nenhum valor.
+
+Como buscamos uma médida única do efeito parcial, uma medida comumente utilizada é o PEA. Ela busca trazer o efeito parcial que a variável explicativa afeta na pessoa "média" da amostra. O PEA pode não ter uma interpretação clara, já que potencialmente não equivale ao efeito para nenhum indivíduo da amostra.
+
+Por outro lado, o APE busca calcular a média dos efeitos parciais individuais ao longo da amostra.
+
+
+##### Variância Assintótica do Efeito Parcial sobre a média
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Vimos que a derivada em relação a xk no ponto x_barra de E[Y|X=x]=Beta_k * dnorm(x_barra *beta estimado).
+# Para calcularmos a variância assintótica do PEA é necessário calcular a derivada desse termo em relação a beta no ponto x_barra.
+
+k <- x_barra %*% b_est
+d <- dnorm(x_barra %*% b_est)
+
+# Derivada de beta em relação (derivada de E[Y|X=x] em relação a x0): 
+# Notr que estamos multiplicado por 1, pois x
+d_0 <- rep(0,7)
+for(i in 1:7){
+  d_0[i] <- (-1) * b_est[1] * d * k * 1
+  d_0[1] <- (-1) * b_est[1] * d * k * 1 + d
+}
+
+# Derivada de beta em relação (derivada de E[Y|X=x] em relação a x1):
+d_1 <- rep(0,7)
+for(i in 1:7){
+  d_1[i] <- (-1) * b_est[2] * d * k * x_barra[i]
+  d_1[2] <- (-1) * b_est[2] * d * k * x_barra[2] + d
+}
+
+# gradiente de beta - x2:
+d_2 <- rep(0,7)
+for(i in 1:7){
+  d_2[i] <- (-1) * b_est[3] * d * k * x_barra[i]
+  d_2[3] <- (-1) * b_est[3] * d * k * x_barra[3] + d
+}
+
+# gradiente de beta - x3:
+d_3 <- rep(0,7)
+for(i in 1:7){
+  d_3[i] <- (-1) * b_est[4] * d * k * x_barra[i]
+  d_3[4] <- (-1) * b_est[4] * d * k * x_barra[4] + d
+}
+
+# gradiente de beta - x4:
+d_4 <- rep(0,7)
+for(i in 1:7){
+  d_4[i] <- (-1) * b_est[5] * d * k * x_barra[i]
+  d_4[5] <- (-1) * b_est[5] * d * k * x_barra[5] + d
+}
+
+# gradiente de beta - x5:
+d_5 <- rep(0,7)
+for(i in 1:7){
+  d_5[i] <- (-1) * b_est[6] * d * k * x_barra[i]
+  d_5[6] <- (-1) * b_est[6] * d * k * x_barra[6] + d
+}
+
+# gradiente de beta - x6:
+d_6 <- rep(0,7)
+for(i in 1:7){
+  d_6[i] <- (-1) * b_est[7] * d * k * x_barra[i]
+  d_6[7] <- (-1) * b_est[7] * d * k * x_barra[7] + d
+}
+```
+###### Com as derivações dos vetores gradientes realizadas acima, podemos calcular a variância assintótica do Efeito Parcial sobre a média
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+VPEA_0 <- t(as.matrix(d_0)) %*% Avar %*% as.matrix(d_0)
+VPEA_1 <- t(as.matrix(d_1)) %*% Avar %*% as.matrix(d_1)
+VPEA_2 <- t(as.matrix(d_2)) %*% Avar %*% as.matrix(d_2)
+VPEA_3 <- t(as.matrix(d_3)) %*% Avar %*% as.matrix(d_3)
+VPEA_4 <- t(as.matrix(d_4)) %*% Avar %*% as.matrix(d_4)
+VPEA_5 <- t(as.matrix(d_5)) %*% Avar %*% as.matrix(d_5)
+VPEA_6 <- t(as.matrix(d_6)) %*% Avar %*% as.matrix(d_6)
+
+Var_PEA <- rbind(VPEA_0,VPEA_1,VPEA_2,VPEA_3,VPEA_4,VPEA_5,VPEA_6)
+dimnames(Var_PEA) <- list(c("b0","b1","b2","b3","b4","b5","b6"), c("Var_PEA"))
+Var_PEA
+```
+
+##### Variância Assintótica do Efeito Parcial Médio (APE):
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+
+g <- x %*% b_est
+e <- dnorm(g)
+
+# Gradiente 0
+e_0 <- rep(0,7)
+for(i in 1:7){
+  e_0[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_0[1] <- (-1/1000) * b_est[1] * sum( e * g * x[,1]) + (1/1000)*sum(e)
+}
+
+# Gradiente 1
+e_1 <- rep(0,7)
+for(i in 1:7){
+  e_1[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_1[2] <- (-1/1000) * b_est[2] * sum( e * g * x[,2]) + (1/1000)*sum(e)
+}
+
+# Gradiente 2
+e_2 <- rep(0,7)
+for(i in 1:7){
+  e_2[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_2[3] <- (-1/1000) * b_est[3] * sum( e * g * x[,3]) + (1/1000)*sum(e)
+}
+
+# Gradiente 3
+e_3 <- rep(0,7)
+for(i in 1:7){
+  e_3[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_3[4] <- (-1/1000) * b_est[4] * sum( e * g * x[,4]) + (1/1000)*sum(e)
+}
+
+# Gradiente 4
+e_4 <- rep(0,7)
+for(i in 1:7){
+  e_4[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_4[5] <- (-1/1000) * b_est[5] * sum( e * g * x[,5]) + (1/1000)*sum(e)
+}
+
+# Gradiente 5
+e_5 <- rep(0,7)
+for(i in 1:7){
+  e_5[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_5[6] <- (-1/1000) * b_est[6] * sum( e * g * x[,6]) + (1/1000)*sum(e)
+}
+
+# Gradiente 6
+e_6 <- rep(0,7)
+for(i in 1:7){
+  e_6[i] <- (-1/1000) * b_est[i] * sum( e * g * x[,i])
+  e_6[7] <- (-1/1000) * b_est[7] * sum( e * g * x[,7]) + (1/1000)*sum(e)
+}
+```
+###### Com as derivações dos vetores gradientes realizadas acima, podemos calcular a **Variância Assintótica do Efeito Parcial Médio (APE)**:
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+VAPE_0 <- t(as.matrix(e_0)) %*% Avar %*% as.matrix(e_0)
+VAPE_1 <- t(as.matrix(e_1)) %*% Avar %*% as.matrix(e_1)
+VAPE_2 <- t(as.matrix(e_2)) %*% Avar %*% as.matrix(e_2)
+VAPE_3 <- t(as.matrix(e_3)) %*% Avar %*% as.matrix(e_3)
+VAPE_4 <- t(as.matrix(e_4)) %*% Avar %*% as.matrix(e_4)
+VAPE_5 <- t(as.matrix(e_5)) %*% Avar %*% as.matrix(e_5)
+VAPE_6 <- t(as.matrix(e_6)) %*% Avar %*% as.matrix(e_6)
+
+Var_APE <- rbind(VAPE_0,VAPE_1,VAPE_2,VAPE_3,VAPE_4,VAPE_5,VAPE_6)
+dimnames(Var_APE) <- list(c("b0","b1","b2","b3","b4","b5","b6"), c("Var_APE"))
+Var_APE
+```
+
+
+### **1.3 OLS **
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+ols_results <- lm(employed ~ income + vote_share + age + as.factor(race), data=df)
+kable(summary(ols_results)$coef, digits = 2) %>% kable_styling()
+
+
+# Comparando: 
+res
+```
+
+### **1.4 teste de LR**
+$$H0: \hat{\beta_{age}} = 0$$
+$$H1: \hat{\beta_{age}} \neq 0$$
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+LR_irr <- (1/1000)*sum( y * log(pnorm(xb_e)) + (1-y) * log(1-pnorm(xb_e)))
+
+# Como estamos testando a idade, então b3=0:
+p <- b_est[0] + b_est[1] * x1 + b_est[2] * x2 + b_est[4] * x4 + b_est[5]* x5 + b_est[6] * x6 
+
+LR_rest <- (1/1000)*sum( y * log(pnorm(p)) + (1-y) * log(1 - pnorm(p)))
+
+LR <- 2 * (LR_irr - LR_rest)
+
+# o LR teste tem distribuição qui-quadrado com q graus de liberdade. Como só temos uma restrição para a idade, então q=1.
+
+chi <- qchisq(0.95,1)
+
+LR_tabela <- cbind(LR,chi)
+dimnames(LR_tabela) <- list(c("Valores"),
+                          c("Observado", "Crítico"))
+LR_tabela
+
+```
+**Como a estatística de teste observada é maior que o valor crítico, então rejeitamos a Hipótese Nula ao nível de 5% de significância**
+
+
+
+### **1.5 teste de Vuong (1989)**
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Estimando o LOGIT:
+
+logit_results <- glm(employed ~ income + vote_share + age + race, data=df, 
+                 family = binomial(link = "logit"))
+kable(summary(logit_results)$coef, digits = 4) %>% kable_styling()
+
+logit_est <- cbind(logit_results$coefficients)
+colnames(logit_est) <- list(c("Estimativa"))
+
+logit_est
+```
+###### Vuong(1989) test
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE}
+
+# Vuong:
+# No início definimos que a Matriz X*Beta estimado:
+xb_e <- x %*% b_est
+lg_e <- x %*% logit_est
+
+eta <- (1/1000) * sum(( y %*% log(pnorm(xb_e)) + (1-y) %*% log(1-pnorm(xb_e)) - (y %*% log(pnorm(lg_e)) + (1-y) %*% log(1-pnorm(lg_e))))^2)
+
+Vuong <- ((1000)^(-0.5)) * sum(y * log(pnorm(xb_e)) + (1-y) * log(1-pnorm(xb_e))) - 
+  sum(y * log(pnorm(lg_e)) + (1-y) * log(1-pnorm(lg_e)))
+
+
+Vuong_test <- Vuong/((eta)^(0.5))
+
+nor <-qnorm(p=0.95)
+
+Vuong_tabela <- cbind(Vuong_test,nor)
+dimnames(Vuong_tabela) <- list(c("Valores"),
+                          c("Observado", "Crítico"))
+Vuong_tabela
+```
+**Como o valor observado é menor que o valor crítico, então não rejeitamos H0**
+Se estivessemos usando a distribuição errada, H0 seria violado. Logo, não podemos afirmar que o modelo Probit é mais corretamente especificado que o Logit.
+
+
